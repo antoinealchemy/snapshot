@@ -100,18 +100,19 @@ async def sol_price_refresh_loop():
 
 async def collect_snapshot(contract_address: str) -> dict:
     """
-    Collect complete snapshot for a token via 4 parallel API calls.
+    Collect complete snapshot for a token via 5 parallel API calls.
     Returns dict ready for database insertion.
     """
     async with aiohttp.ClientSession() as session:
-        # 4 appels en parallèle
+        # 5 appels en parallèle (incluant SOL price)
         token_task = fetch_api(session, f"/tokens/{contract_address}")
         ath_task = fetch_api(session, f"/tokens/{contract_address}/ath")
         stats_task = fetch_api(session, f"/stats/{contract_address}")
         first_buyers_task = fetch_api(session, f"/first-buyers/{contract_address}")
+        sol_price_task = fetch_api(session, f"/tokens/{SOL_TOKEN_ADDRESS}")
 
-        token_data, ath_data, stats_data, first_buyers_data = await asyncio.gather(
-            token_task, ath_task, stats_task, first_buyers_task
+        token_data, ath_data, stats_data, first_buyers_data, sol_data = await asyncio.gather(
+            token_task, ath_task, stats_task, first_buyers_task, sol_price_task
         )
 
     # Construire le snapshot
@@ -135,6 +136,21 @@ async def collect_snapshot(contract_address: str) -> dict:
     # Parser /first-buyers/{token}
     if first_buyers_data:
         snapshot.update(parse_first_buyers_data(first_buyers_data))
+
+    # SOL price: real-time from API, fallback to cache
+    sol_price = None
+    if sol_data:
+        pools = sol_data.get("pools", [])
+        if pools and isinstance(pools[0], dict):
+            sol_price = pools[0].get("price", {}).get("usd")
+
+    # Fallback to cached price if API call failed
+    if sol_price is None:
+        sol_price = get_sol_price()
+        if sol_price:
+            logger.debug(f"SOL price from cache: ${sol_price:.2f}")
+
+    snapshot["sol_price_at_signal"] = sol_price
 
     return snapshot
 

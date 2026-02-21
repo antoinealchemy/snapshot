@@ -11,7 +11,7 @@ from telethon import TelegramClient, events
 
 from config import API_ID, API_HASH, BOT_TOKEN, SOURCE_CHANNEL, SOURCE_CHANNEL_DEGEN_ONLY, validate_config
 from parser import parse_signal, extract_symbol_from_message
-from collector import collect_snapshot, get_sol_price, refresh_sol_price, sol_price_refresh_loop
+from collector import collect_snapshot, refresh_sol_price, sol_price_refresh_loop
 from database import init_database, token_exists, insert_snapshot
 
 # Configuration du logging
@@ -78,10 +78,7 @@ async def process_message(text: str, source_channel_id: int):
         if not snapshot.get("symbol"):
             snapshot["symbol"] = extract_symbol_from_message(text)
 
-        # Attach SOL price from cache (no API call)
-        snapshot["sol_price_at_signal"] = get_sol_price()
-
-        # Insert into database
+        # Insert into database (sol_price_at_signal already set by collect_snapshot)
         if insert_snapshot(snapshot):
             stats["snapshots_collected"] += 1
 
