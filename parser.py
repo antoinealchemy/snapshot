@@ -77,10 +77,12 @@ def parse_signal(text: str, source_channel: str) -> dict | None:
     if lq_match:
         result["signal_lq_usd"] = parse_value_with_suffix(lq_match.group(1), lq_match.group(2))
 
-    # Extraire Seen (âge du token)
-    seen_match = re.search(r'Seen:\s*([0-9]+d)?\s*([0-9]+h)?', text)
+    # BUG 5 FIX: Extraire Seen (âge du token) - support d/h/m formats
+    seen_match = re.search(r'Seen:\s*([0-9]+d)?\s*([0-9]+h)?\s*([0-9]+m)?', text)
     if seen_match:
-        result["seen_minutes"] = parse_seen_to_minutes(seen_match.group(1), seen_match.group(2))
+        result["seen_minutes"] = parse_seen_to_minutes(
+            seen_match.group(1), seen_match.group(2), seen_match.group(3)
+        )
 
     # Validation : on doit avoir au minimum contract_address et wallet_name
     if not result["contract_address"]:
@@ -114,8 +116,8 @@ def parse_value_with_suffix(value_str: str, suffix: str) -> float:
         return None
 
 
-def parse_seen_to_minutes(days_str: str | None, hours_str: str | None) -> int:
-    """Convert '5d 23h' format to total minutes"""
+def parse_seen_to_minutes(days_str: str | None, hours_str: str | None, minutes_str: str | None = None) -> int:
+    """Convert '5d 23h 30m' format to total minutes"""
     total_minutes = 0
 
     if days_str:
@@ -125,6 +127,10 @@ def parse_seen_to_minutes(days_str: str | None, hours_str: str | None) -> int:
     if hours_str:
         hours = int(hours_str.replace('h', ''))
         total_minutes += hours * 60
+
+    if minutes_str:
+        minutes = int(minutes_str.replace('m', ''))
+        total_minutes += minutes
 
     return total_minutes if total_minutes > 0 else None
 

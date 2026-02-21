@@ -162,10 +162,13 @@ def parse_token_data(data: dict) -> dict:
     # Token info
     token = data.get("token", {})
     result["symbol"] = token.get("symbol")
-    result["platform"] = token.get("createdOn")
+
+    # BUG 4 FIX: platform - fallback to pools[].market if createdOn is empty
+    platform = token.get("createdOn")
 
     # Pools - trouver le meilleur pool (plus grosse MC)
     pools = data.get("pools", [])
+    best_pool = None
     if pools:
         active_pools = [p for p in pools if isinstance(p, dict) and (p.get("marketCap", {}).get("usd") or 0) > 0]
         if active_pools:
@@ -192,11 +195,21 @@ def parse_token_data(data: dict) -> dict:
             result["txns_buys_total"] = buys.get("total") if isinstance(buys, dict) else buys
             result["txns_sells_total"] = sells.get("total") if isinstance(sells, dict) else sells
 
+            # BUG 4 FIX: Fallback platform from pool.market
+            if not platform:
+                platform = best_pool.get("market")
+
+    # Set platform with fallback to "unknown"
+    result["platform"] = platform if platform else "unknown"
+
     # Holders
     result["holders"] = data.get("holders")
 
-    # Token age
+    # BUG 3 FIX: Token age - try token.createdAt first, then pool.createdAt
     created_timestamp = token.get("createdAt")
+    if not created_timestamp and best_pool:
+        created_timestamp = best_pool.get("createdAt")
+
     if created_timestamp:
         try:
             age_seconds = int(time.time()) - int(created_timestamp / 1000)  # API gives ms
@@ -204,20 +217,51 @@ def parse_token_data(data: dict) -> dict:
         except (ValueError, TypeError):
             pass
 
+    # BUG 2 FIX: price_change_5m and price_change_1h from events
+    events = data.get("events", {})
+    if events:
+        # 5 minutes price change
+        m5_events = events.get("5m", {}) or events.get("m5", {})
+        if isinstance(m5_events, dict):
+            price_change_5m = m5_events.get("priceChangePercentage")
+            if price_change_5m is not None:
+                result["price_change_5m"] = price_change_5m
+
+        # 1 hour price change
+        h1_events = events.get("1h", {}) or events.get("h1", {})
+        if isinstance(h1_events, dict):
+            price_change_1h = h1_events.get("priceChangePercentage")
+            if price_change_1h is not None:
+                result["price_change_1h"] = price_change_1h
+
     # Risk data
     risk = data.get("risk", {})
     result["risk_score"] = risk.get("score")
     result["risk_rugged"] = 1 if risk.get("rugged") else 0
     result["risk_top10"] = risk.get("top10HoldersPercent")
 
-    # Risk details from risks array
+    # BUG 6 FIX: Direct extraction of risk fields
+    # Try direct nested access first
+    snipers_data = risk.get("snipers", {})
+    if isinstance(snipers_data, dict):
+        result["risk_snipers"] = snipers_data.get("count")
+
+    insiders_data = risk.get("insiders", {})
+    if isinstance(insiders_data, dict):
+        result["risk_insiders"] = insiders_data.get("count")
+
+    dev_data = risk.get("dev", {})
+    if isinstance(dev_data, dict):
+        result["risk_dev_pct"] = dev_data.get("percentage")
+
+    # Risk details from risks array (fallback)
     risks = risk.get("risks", [])
     for r in risks:
         name = r.get("name", "").lower()
         value = r.get("value")
 
         # Parse Top 10 Holders from risks array if not directly available
-        if "top 10" in name and result["risk_top10"] is None:
+        if "top 10" in name and result.get("risk_top10") is None:
             if isinstance(value, str) and "%" in value:
                 try:
                     result["risk_top10"] = float(value.replace("%", ""))
@@ -226,12 +270,31 @@ def parse_token_data(data: dict) -> dict:
             elif isinstance(value, (int, float)):
                 result["risk_top10"] = value
 
-        if "sniper" in name:
-            result["risk_snipers"] = value if isinstance(value, int) else None
-        elif "insider" in name.lower():
-            result["risk_insiders"] = value
-        elif "dev" in name.lower() and "percent" in name.lower():
-            result["risk_dev_pct"] = value
+        # Fallback extraction from risks array
+        if "sniper" in name and result.get("risk_snipers") is None:
+            if isinstance(value, int):
+                result["risk_snipers"] = value
+            elif isinstance(value, str):
+                try:
+                    result["risk_snipers"] = int(value)
+                except ValueError:
+                    pass
+        elif "insider" in name and result.get("risk_insiders") is None:
+            if isinstance(value, int):
+                result["risk_insiders"] = value
+            elif isinstance(value, str):
+                try:
+                    result["risk_insiders"] = int(value)
+                except ValueError:
+                    pass
+        elif "dev" in name and "percent" in name and result.get("risk_dev_pct") is None:
+            if isinstance(value, (int, float)):
+                result["risk_dev_pct"] = value
+            elif isinstance(value, str):
+                try:
+                    result["risk_dev_pct"] = float(value.replace("%", ""))
+                except ValueError:
+                    pass
 
     return result
 

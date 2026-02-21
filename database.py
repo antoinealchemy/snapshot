@@ -209,10 +209,19 @@ def insert_snapshot(data: dict) -> bool:
     conn = get_connection()
     cursor = conn.cursor()
 
-    # Calculate time fields from first_detected_at
-    if "first_detected_at" in data and data["first_detected_at"]:
-        time_fields = calculate_time_fields(data["first_detected_at"])
-        data.update(time_fields)
+    # BUG 1 FIX: ALWAYS calculate time fields from first_detected_at
+    # Ensure first_detected_at exists
+    if "first_detected_at" not in data or not data["first_detected_at"]:
+        data["first_detected_at"] = int(time.time())
+
+    # Always calculate and set time fields
+    time_fields = calculate_time_fields(data["first_detected_at"])
+    data["day_of_week"] = time_fields["day_of_week"]
+    data["hour_utc"] = time_fields["hour_utc"]
+    data["week_number"] = time_fields["week_number"]
+    data["month"] = time_fields["month"]
+
+    logger.debug(f"Time fields: day={time_fields['day_of_week']}, hour={time_fields['hour_utc']}")
 
     # Calculate excluded_from_analysis based on ath_ratio
     api_mc = data.get("api_mc_usd", 0) or 0
