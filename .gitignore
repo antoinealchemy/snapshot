@@ -1,0 +1,25 @@
+# Data
+data/
+*.db
+
+# Sessions and logs
+*.session
+*.session-journal
+*.log
+*.pid
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
