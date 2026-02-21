@@ -513,32 +513,37 @@ def get_stats_by_platform() -> list:
 
 
 def get_stats_by_sol_price() -> list:
-    """Get winrate statistics by SOL price ranges (included tokens only)"""
+    """Get winrate statistics by dynamic $5 SOL price ranges (included tokens only)"""
     conn = get_connection()
     cursor = conn.cursor()
 
+    # Dynamic $5 ranges: floor(price / 5) * 5
     cursor.execute("""
         SELECT
-            CASE
-                WHEN sol_price_at_signal < 60 THEN '$0-60'
-                WHEN sol_price_at_signal < 80 THEN '$60-80'
-                WHEN sol_price_at_signal < 100 THEN '$80-100'
-                WHEN sol_price_at_signal < 130 THEN '$100-130'
-                ELSE '$130+'
-            END as sol_range,
+            CAST((CAST(sol_price_at_signal AS INTEGER) / 5) * 5 AS INTEGER) as range_start,
             COUNT(*) as total,
             SUM(CASE WHEN reached_x2 = 1 THEN 1 ELSE 0 END) as x2_count
         FROM token_snapshots
         WHERE checked_j7 IS NOT NULL
         AND excluded_from_analysis = 0
         AND sol_price_at_signal IS NOT NULL
-        GROUP BY sol_range
-        ORDER BY MIN(sol_price_at_signal)
+        GROUP BY range_start
+        ORDER BY range_start ASC
     """)
 
-    results = cursor.fetchall()
+    results = []
+    for row in cursor.fetchall():
+        start = row['range_start']
+        end = start + 5
+        results.append({
+            'sol_range': f'${start}-{end}',
+            'range_start': start,
+            'total': row['total'],
+            'x2_count': row['x2_count']
+        })
+
     conn.close()
-    return [dict(row) for row in results]
+    return results
 
 
 def get_wallet_stats_detailed() -> list:
