@@ -101,6 +101,7 @@ def init_database():
             -- Checkpoints de suivi (données à chaque timestamp)
             -- T+5min
             mc_5min                   REAL,
+            ath_5min                  REAL,
             holders_5min              INTEGER,
             liquidity_5min            REAL,
             price_5min                REAL,
@@ -108,6 +109,7 @@ def init_database():
             sells_5min                INTEGER,
             -- T+20min
             mc_20min                  REAL,
+            ath_20min                 REAL,
             holders_20min             INTEGER,
             liquidity_20min           REAL,
             price_20min               REAL,
@@ -115,6 +117,7 @@ def init_database():
             sells_20min               INTEGER,
             -- T+1h
             mc_1h                     REAL,
+            ath_1h                    REAL,
             holders_1h                INTEGER,
             liquidity_1h              REAL,
             price_1h                  REAL,
@@ -122,6 +125,7 @@ def init_database():
             sells_1h                  INTEGER,
             -- T+3h
             mc_3h                     REAL,
+            ath_3h                    REAL,
             holders_3h                INTEGER,
             liquidity_3h              REAL,
             price_3h                  REAL,
@@ -129,6 +133,7 @@ def init_database():
             sells_3h                  INTEGER,
             -- T+6h
             mc_6h                     REAL,
+            ath_6h                    REAL,
             holders_6h                INTEGER,
             liquidity_6h              REAL,
             price_6h                  REAL,
@@ -136,6 +141,7 @@ def init_database():
             sells_6h                  INTEGER,
             -- T+24h
             mc_24h                    REAL,
+            ath_24h                   REAL,
             holders_24h               INTEGER,
             liquidity_24h             REAL,
             price_24h                 REAL,
@@ -143,6 +149,7 @@ def init_database():
             sells_24h                 INTEGER,
             -- T+7d
             mc_7d                     REAL,
+            ath_7d                    REAL,
             holders_7d                INTEGER,
             liquidity_7d              REAL,
             price_7d                  REAL,
@@ -207,6 +214,14 @@ def _migrate_add_columns(cursor):
         ("mc_6h", "REAL"),
         ("mc_24h", "REAL"),
         ("mc_7d", "REAL"),
+        # Checkpoint columns - ath
+        ("ath_5min", "REAL"),
+        ("ath_20min", "REAL"),
+        ("ath_1h", "REAL"),
+        ("ath_3h", "REAL"),
+        ("ath_6h", "REAL"),
+        ("ath_24h", "REAL"),
+        ("ath_7d", "REAL"),
         # Checkpoint columns - holders
         ("holders_5min", "INTEGER"),
         ("holders_20min", "INTEGER"),
@@ -412,6 +427,7 @@ def update_token_checkpoint(
 
     # Column names for this checkpoint
     mc_col = f"mc_{checkpoint}"
+    ath_col = f"ath_{checkpoint}"
     holders_col = f"holders_{checkpoint}"
     liquidity_col = f"liquidity_{checkpoint}"
     price_col = f"price_{checkpoint}"
@@ -445,6 +461,7 @@ def update_token_checkpoint(
             cursor.execute(f"""
                 UPDATE token_snapshots
                 SET {mc_col} = ?,
+                    {ath_col} = ?,
                     {holders_col} = ?,
                     {liquidity_col} = ?,
                     {price_col} = ?,
@@ -459,6 +476,7 @@ def update_token_checkpoint(
                 WHERE contract_address = ?
             """, (
                 current_mc,
+                current_ath,
                 holders,
                 liquidity_usd,
                 price_usd,
@@ -475,10 +493,10 @@ def update_token_checkpoint(
         else:
             cursor.execute(f"""
                 UPDATE token_snapshots
-                SET {mc_col} = ?, {holders_col} = ?, {liquidity_col} = ?,
+                SET {mc_col} = ?, {ath_col} = ?, {holders_col} = ?, {liquidity_col} = ?,
                     {price_col} = ?, {buys_col} = ?, {sells_col} = ?
                 WHERE contract_address = ?
-            """, (current_mc, holders, liquidity_usd, price_usd, txns_buys, txns_sells, contract_address))
+            """, (current_mc, current_ath, holders, liquidity_usd, price_usd, txns_buys, txns_sells, contract_address))
 
         conn.commit()
         conn.close()
@@ -498,13 +516,13 @@ def update_token_checkpoint(
             "reached_x10": 1 if (row and true_multiple >= 10) else 0,
         }
     else:
-        # Intermediate checkpoint: store all checkpoint data
+        # Intermediate checkpoint: store all checkpoint data including ATH
         cursor.execute(f"""
             UPDATE token_snapshots
-            SET {mc_col} = ?, {holders_col} = ?, {liquidity_col} = ?,
+            SET {mc_col} = ?, {ath_col} = ?, {holders_col} = ?, {liquidity_col} = ?,
                 {price_col} = ?, {buys_col} = ?, {sells_col} = ?
             WHERE contract_address = ?
-        """, (current_mc, holders, liquidity_usd, price_usd, txns_buys, txns_sells, contract_address))
+        """, (current_mc, current_ath, holders, liquidity_usd, price_usd, txns_buys, txns_sells, contract_address))
 
         conn.commit()
         conn.close()
@@ -512,6 +530,7 @@ def update_token_checkpoint(
         return {
             "checkpoint": checkpoint,
             "current_mc": current_mc,
+            "current_ath": current_ath,
             "holders": holders,
             "liquidity_usd": liquidity_usd,
             "price_usd": price_usd,

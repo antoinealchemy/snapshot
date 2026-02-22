@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Téléprompter VSL</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            font-size: 1rem;
+            line-height: 1.8;
+            overflow: hidden;
+            height: 100vh;
+        }
+
+        .container {
+            position: relative;
+            height: 100vh;
+            padding: 2rem 32%;
+        }
+
+        .script-container {
+            position: relative;
+            height: 100%;
+            overflow: hidden;
+        }
+
+        .script {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            padding-top: 15vh;
+            transition: transform 0.1s linear;
+        }
+
+        .script p {
+            margin-bottom: 1.5em;
+            text-align: left;
+        }
+
+        /* Gradient overlay to hide text below visible area */
+        .gradient-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: linear-gradient(
+                to bottom,
+                transparent 0%,
+                transparent 18%,
+                rgba(0, 0, 0, 0.3) 22%,
+                rgba(0, 0, 0, 0.7) 28%,
+                rgba(0, 0, 0, 0.95) 35%,
+                #000 40%
+            );
+            pointer-events: none;
+        }
+
+        /* Controls */
+        .controls {
+            position: fixed;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+            opacity: 0.3;
+            transition: opacity 0.3s;
+            z-index: 100;
+        }
+
+        .controls:hover {
+            opacity: 1;
+        }
+
+        .btn {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff;
+            padding: 0.5rem 1rem;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.75rem;
+            transition: background 0.2s;
+        }
+
+        .btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        .btn.active {
+            background: rgba(76, 175, 80, 0.3);
+            border-color: rgba(76, 175, 80, 0.5);
+        }
+
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        .speed-control input {
+            width: 80px;
+            accent-color: #4CAF50;
+        }
+
+        .timer {
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.5);
+            font-variant-numeric: tabular-nums;
+        }
+
+        .status {
+            position: fixed;
+            top: 1rem;
+            right: 1rem;
+            font-size: 0.7rem;
+            color: rgba(255, 255, 255, 0.4);
+            opacity: 0.3;
+            transition: opacity 0.3s;
+        }
+
+        .status:hover {
+            opacity: 1;
+        }
+
+        .paused-indicator {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 3rem;
+            opacity: 0;
+            transition: opacity 0.2s;
+            pointer-events: none;
+        }
+
+        .paused-indicator.visible {
+            opacity: 0.3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="script-container">
+            <div class="script" id="script">
+                <p>Si vous dirigez une entreprise et que vos équipes passent du temps à fouiller dans des dossiers, des mails ou des bases de données pour trouver une information — ce que je vais vous présenter dans les deux prochaines minutes pourrait faire gagner des centaines d'heures par an à vos équipes.</p>
+
+                <p>Dans la plupart des entreprises, l'information existe. Les documents sont là. Les procédures, les contrats, les données clients, les dossiers — tout est quelque part. Le problème, c'est que les trouver prend du temps. Quelqu'un qui interrompt un collègue pour poser une question. Un fichier introuvable dans un dossier partagé. Une information bloquée parce que la seule personne qui la connaît n'est pas disponible.</p>
+
+                <p>Ce temps-là, multiplié par le nombre de personnes dans votre équipe, multiplié par le nombre de fois que ça arrive dans une journée, représente une perte silencieuse, un réel coût d'opportunité. On ne le voit pas sur un tableau de bord, mais il est là — ralentissant la productivité de vos équipes, et donc directement votre chiffre d'affaires.</p>
+
+                <p>Avec notre équipe, nous développons un système sur mesure qui permet à chaque membre de votre organisation de trouver n'importe quelle information ou document en moins de 20 secondes. Le principe est simple : une interface connectée à l'ensemble de votre documentation interne, à laquelle on pose une question en langage naturel — comme on enverrait un message — et qui répond avec précision, en citant la source.</p>
+
+                <p>Et je tiens à vous rassurer, cela ne nécessite aucune formation lourde et aucune réorganisation de vos fichiers. On s'adapte à votre structure pour vous offrir une solution entièrement sur mesure. Nous garantissons un système 100% opérationnel, avec une précision de réponse supérieure à 95%. Et parce que chaque entreprise est différente en terme de taille, de secteur ou de volume de données, on commence par un audit, car c'est un système sur mesure. C'est lors d'un appel avec vous qu'on définit exactement ce dont vous avez besoin et ce que ça représente en terme de production.</p>
+
+                <p>Donc si ça vous parle, réservez un appel en cliquant sur le bouton sous cette vidéo. C'est un audit totalement offert de 45 minutes, pour voir si ce qu'on fait correspond à votre situation. Alors je précise quand même que nous n'accompagnons qu'une à deux entreprises par mois, car la mise en place du système et le traitement de vos documents est un travail à plein temps. Donc si vous êtes encore sur cette vidéo et que vous sentez que c'est le bon moment, réservez votre audit gratuit maintenant, et je vous dis à très vite.</p>
+            </div>
+            <div class="gradient-overlay"></div>
+        </div>
+    </div>
+
+    <div class="paused-indicator" id="pausedIndicator">⏸</div>
+
+    <div class="status" id="status">
+        <div>ESPACE: Pause/Play</div>
+        <div>R: Reset</div>
+        <div>←/→: Vitesse</div>
+    </div>
+
+    <div class="controls">
+        <button class="btn" id="resetBtn">Reset (R)</button>
+        <button class="btn active" id="playBtn">▶ Play</button>
+        <div class="speed-control">
+            <span>Vitesse:</span>
+            <input type="range" id="speedSlider" min="0.5" max="1.5" step="0.05" value="1">
+            <span id="speedValue">1.0x</span>
+        </div>
+        <div class="timer" id="timer">0:00 / 1:45</div>
+    </div>
+
+    <script>
+        const script = document.getElementById('script');
+        const playBtn = document.getElementById('playBtn');
+        const resetBtn = document.getElementById('resetBtn');
+        const speedSlider = document.getElementById('speedSlider');
+        const speedValue = document.getElementById('speedValue');
+        const timer = document.getElementById('timer');
+        const pausedIndicator = document.getElementById('pausedIndicator');
+
+        const BASE_DURATION = 105; // 1:45 in seconds
+        let duration = BASE_DURATION;
+        let isPlaying = true;
+        let startTime = null;
+        let pausedTime = 0;
+        let totalScrollDistance = 0;
+        let animationId = null;
+
+        function init() {
+            // Calculate total scroll distance (script height minus visible area)
+            const visibleHeight = window.innerHeight * 0.18; // ~18% visible
+            totalScrollDistance = script.scrollHeight - visibleHeight;
+            startTime = performance.now();
+            animate();
+        }
+
+        function animate() {
+            if (!isPlaying) {
+                animationId = requestAnimationFrame(animate);
+                return;
+            }
+
+            const elapsed = (performance.now() - startTime) / 1000;
+            const progress = Math.min(elapsed / duration, 1);
+
+            // Update position
+            const translateY = -progress * totalScrollDistance;
+            script.style.transform = `translateY(${translateY}px)`;
+
+            // Update timer
+            const currentSeconds = Math.floor(elapsed);
+            const totalSeconds = Math.floor(duration);
+            timer.textContent = `${formatTime(currentSeconds)} / ${formatTime(totalSeconds)}`;
+
+            if (progress < 1) {
+                animationId = requestAnimationFrame(animate);
+            }
+        }
+
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function togglePlay() {
+            isPlaying = !isPlaying;
+
+            if (isPlaying) {
+                // Resuming: adjust start time to account for paused duration
+                startTime = performance.now() - pausedTime * 1000;
+                playBtn.textContent = '▶ Play';
+                playBtn.classList.add('active');
+                pausedIndicator.classList.remove('visible');
+            } else {
+                // Pausing: store current elapsed time
+                pausedTime = (performance.now() - startTime) / 1000;
+                playBtn.textContent = '⏸ Pause';
+                playBtn.classList.remove('active');
+                pausedIndicator.classList.add('visible');
+            }
+        }
+
+        function reset() {
+            startTime = performance.now();
+            pausedTime = 0;
+            script.style.transform = 'translateY(0)';
+            if (!isPlaying) {
+                togglePlay();
+            }
+        }
+
+        function updateSpeed(value) {
+            const speed = parseFloat(value);
+            speedValue.textContent = `${speed.toFixed(2)}x`;
+
+            // Calculate current progress before changing duration
+            const elapsed = isPlaying
+                ? (performance.now() - startTime) / 1000
+                : pausedTime;
+            const progress = elapsed / duration;
+
+            // Update duration based on speed
+            duration = BASE_DURATION / speed;
+
+            // Adjust start time to maintain current position
+            const newElapsed = progress * duration;
+            if (isPlaying) {
+                startTime = performance.now() - newElapsed * 1000;
+            } else {
+                pausedTime = newElapsed;
+            }
+        }
+
+        // Event listeners
+        playBtn.addEventListener('click', togglePlay);
+        resetBtn.addEventListener('click', reset);
+        speedSlider.addEventListener('input', (e) => updateSpeed(e.target.value));
+
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'Space') {
+                e.preventDefault();
+                togglePlay();
+            } else if (e.code === 'KeyR') {
+                reset();
+            } else if (e.code === 'ArrowLeft') {
+                speedSlider.value = Math.max(0.5, parseFloat(speedSlider.value) - 0.05);
+                updateSpeed(speedSlider.value);
+            } else if (e.code === 'ArrowRight') {
+                speedSlider.value = Math.min(1.5, parseFloat(speedSlider.value) + 0.05);
+                updateSpeed(speedSlider.value);
+            }
+        });
+
+        // Mouse drag to scrub
+        let isDragging = false;
+        let dragStartY = 0;
+        let dragStartProgress = 0;
+
+        document.addEventListener('mousedown', (e) => {
+            if (e.target.closest('.controls')) return;
+            isDragging = true;
+            dragStartY = e.clientY;
+            const elapsed = isPlaying
+                ? (performance.now() - startTime) / 1000
+                : pausedTime;
+            dragStartProgress = elapsed / duration;
+            document.body.style.cursor = 'grabbing';
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            const deltaY = dragStartY - e.clientY;
+            const sensitivity = 0.001;
+            let newProgress = dragStartProgress + (deltaY * sensitivity);
+            newProgress = Math.max(0, Math.min(1, newProgress));
+
+            const newElapsed = newProgress * duration;
+            if (isPlaying) {
+                startTime = performance.now() - newElapsed * 1000;
+            } else {
+                pausedTime = newElapsed;
+            }
+
+            const translateY = -newProgress * totalScrollDistance;
+            script.style.transform = `translateY(${translateY}px)`;
+
+            const currentSeconds = Math.floor(newElapsed);
+            timer.textContent = `${formatTime(currentSeconds)} / ${formatTime(Math.floor(duration))}`;
+        });
+
+        document.addEventListener('mouseup', () => {
+            isDragging = false;
+            document.body.style.cursor = '';
+        });
+
+        // Initialize after fonts load
+        document.fonts.ready.then(init);
+        window.addEventListener('resize', () => {
+            const visibleHeight = window.innerHeight * 0.18;
+            totalScrollDistance = script.scrollHeight - visibleHeight;
+        });
+    </script>
+</body>
+</html>
