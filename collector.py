@@ -100,19 +100,18 @@ async def sol_price_refresh_loop():
 
 async def collect_snapshot(contract_address: str) -> dict:
     """
-    Collect complete snapshot for a token via 5 parallel API calls.
+    Collect complete snapshot for a token via 4 parallel API calls.
     Returns dict ready for database insertion.
     """
     async with aiohttp.ClientSession() as session:
-        # 5 appels en parallèle (incluant SOL price)
+        # 4 appels en parallèle (incluant SOL price)
         token_task = fetch_api(session, f"/tokens/{contract_address}")
         ath_task = fetch_api(session, f"/tokens/{contract_address}/ath")
         stats_task = fetch_api(session, f"/stats/{contract_address}")
-        first_buyers_task = fetch_api(session, f"/first-buyers/{contract_address}")
         sol_price_task = fetch_api(session, f"/tokens/{SOL_TOKEN_ADDRESS}")
 
-        token_data, ath_data, stats_data, first_buyers_data, sol_data = await asyncio.gather(
-            token_task, ath_task, stats_task, first_buyers_task, sol_price_task
+        token_data, ath_data, stats_data, sol_data = await asyncio.gather(
+            token_task, ath_task, stats_task, sol_price_task
         )
 
     # Construire le snapshot
@@ -132,10 +131,6 @@ async def collect_snapshot(contract_address: str) -> dict:
     # Parser /stats/{token}
     if stats_data:
         snapshot.update(parse_stats_data(stats_data))
-
-    # Parser /first-buyers/{token}
-    if first_buyers_data:
-        snapshot.update(parse_first_buyers_data(first_buyers_data))
 
     # SOL price: real-time from API, fallback to cache
     sol_price = None
@@ -351,22 +346,6 @@ def parse_stats_data(data: dict) -> dict:
             result["volume_1h_usd"] = volume_1h
         result["buyers_1h"] = h1.get("buyers")
         result["sellers_1h"] = h1.get("sellers")
-
-    return result
-
-
-def parse_first_buyers_data(data: dict | list) -> dict:
-    """Extract fields from /first-buyers/{token} response"""
-    result = {}
-
-    buyers = []
-    if isinstance(data, list):
-        buyers = data
-    elif isinstance(data, dict):
-        buyers = data.get("buyers", []) or data.get("data", [])
-
-    if buyers:
-        result["early_buyers_count"] = len(buyers)
 
     return result
 

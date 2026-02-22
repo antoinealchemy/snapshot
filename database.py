@@ -83,9 +83,6 @@ def init_database():
             buyers_1h                 INTEGER,
             sellers_1h                INTEGER,
 
-            -- /first-buyers/{token} - 1 appel
-            early_buyers_count            INTEGER,
-
             -- Prix SOL au moment du signal
             sol_price_at_signal           REAL,
 
@@ -158,7 +155,6 @@ def init_database():
 
             -- Résultats finaux (calculés à T+7d)
             current_ath_usd           REAL,
-            max_mc_reached            REAL,
             true_multiple             REAL,
             reached_x2                INTEGER,
             reached_x5                INTEGER,
@@ -264,13 +260,13 @@ def _migrate_add_columns(cursor):
         ("sells_7d", "INTEGER"),
         # Final results
         ("current_ath_usd", "REAL"),
-        ("max_mc_reached", "REAL"),
         ("true_multiple", "REAL"),
     ]
 
     # Columns to remove (if they exist, we'll just ignore them)
     deprecated_columns = ["checked_j1", "checked_j3", "checked_j7", "detection_type",
-                          "risk_rugged", "early_buyers_still_holding", "early_buyers_avg_pnl"]
+                          "risk_rugged", "early_buyers_still_holding", "early_buyers_avg_pnl",
+                          "early_buyers_count", "max_mc_reached"]
 
     for col_name, col_type in new_columns:
         if col_name not in existing_columns:
@@ -468,7 +464,6 @@ def update_token_checkpoint(
                     {buys_col} = ?,
                     {sells_col} = ?,
                     current_ath_usd = ?,
-                    max_mc_reached = ?,
                     true_multiple = ?,
                     reached_x2 = ?,
                     reached_x5 = ?,
@@ -483,7 +478,6 @@ def update_token_checkpoint(
                 txns_buys,
                 txns_sells,
                 current_ath,
-                max_mc,
                 true_multiple,
                 1 if true_multiple >= 2 else 0,
                 1 if true_multiple >= 5 else 0,
@@ -509,7 +503,6 @@ def update_token_checkpoint(
             "price_usd": price_usd,
             "txns_buys": txns_buys,
             "txns_sells": txns_sells,
-            "max_mc_reached": max_mc if row else current_mc,
             "true_multiple": true_multiple if row else 0,
             "reached_x2": 1 if (row and true_multiple >= 2) else 0,
             "reached_x5": 1 if (row and true_multiple >= 5) else 0,
