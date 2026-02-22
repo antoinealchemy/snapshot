@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Check Outcomes Script - Multi-day verification (J+1, J+3, J+7)
+Check Outcomes Script - Multi-checkpoint verification
 
-Checks tokens at multiple intervals, uses ATH comparison for accurate
-multiple detection, and generates comprehensive reports.
+Checks tokens at 7 intervals: T+5min, T+20min, T+1h, T+3h, T+6h, T+24h, T+7d
+Records market cap at each checkpoint and calculates final results at T+7d.
 """
 import asyncio
 import argparse
@@ -11,11 +11,11 @@ import logging
 import time
 from datetime import datetime
 
-from collector import get_current_market_cap, fetch_api
+from collector import fetch_api
 from database import (
     init_database,
-    get_tokens_for_check,
-    update_token_check,
+    get_tokens_for_checkpoint,
+    update_token_checkpoint,
     update_wallet_stats,
     get_global_stats,
     get_wallet_leaderboard,
@@ -24,7 +24,7 @@ from database import (
     get_stats_by_platform,
     get_stats_by_sol_price,
     get_wallet_stats_detailed,
-    get_detection_type_stats,
+    CHECKPOINTS,
 )
 import aiohttp
 from config import SOLANA_API_KEY, SOLANA_API_BASE_URL
@@ -39,9 +39,23 @@ logger = logging.getLogger(__name__)
 # Day names for report
 DAY_NAMES = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
 
+# Checkpoint labels for display
+CHECKPOINT_LABELS = {
+    "5min": "T+5min",
+    "20min": "T+20min",
+    "1h": "T+1h",
+    "3h": "T+3h",
+    "6h": "T+6h",
+    "24h": "T+24h",
+    "7d": "T+7d",
+}
 
-async def fetch_token_data(session: aiohttp.ClientSession, contract_address: str) -> tuple:
-    """Fetch both token data and ATH in parallel"""
+
+async def fetch_token_data(session: aiohttp.ClientSession, contract_address: str) -> dict:
+    """
+    Fetch token data and ATH in parallel.
+    Returns dict with: current_mc, current_ath, holders, liquidity_usd, price_usd, txns_buys, txns_sells
+    """
     headers = {"x-api-key": SOLANA_API_KEY}
 
     async def get_data(endpoint):
@@ -59,131 +73,154 @@ async def fetch_token_data(session: aiohttp.ClientSession, contract_address: str
         get_data(f"/tokens/{contract_address}/ath")
     )
 
-    # Extract current MC
-    current_mc = 0
+    result = {
+        "current_mc": 0,
+        "current_ath": 0,
+        "holders": None,
+        "liquidity_usd": None,
+        "price_usd": None,
+        "txns_buys": None,
+        "txns_sells": None,
+    }
+
+    # Extract data from /tokens/{token}
     if token_data:
+        # Holders (top level)
+        result["holders"] = token_data.get("holders")
+
+        # Pool data
         pools = token_data.get("pools", [])
         if pools:
             active_pools = [p for p in pools if isinstance(p, dict) and (p.get("marketCap", {}).get("usd") or 0) > 0]
             if active_pools:
                 active_pools.sort(key=lambda p: p.get("marketCap", {}).get("usd", 0), reverse=True)
-                current_mc = active_pools[0].get("marketCap", {}).get("usd", 0)
+                best_pool = active_pools[0]
 
-    # Extract current ATH
-    current_ath = 0
+                # Market cap
+                result["current_mc"] = best_pool.get("marketCap", {}).get("usd", 0)
+
+                # Liquidity
+                result["liquidity_usd"] = best_pool.get("liquidity", {}).get("usd")
+
+                # Price
+                result["price_usd"] = best_pool.get("price", {}).get("usd")
+
+                # Transactions
+                txns = best_pool.get("txns", {})
+                buys = txns.get("buys")
+                sells = txns.get("sells")
+                result["txns_buys"] = buys.get("total") if isinstance(buys, dict) else buys
+                result["txns_sells"] = sells.get("total") if isinstance(sells, dict) else sells
+
+    # Extract current ATH from /tokens/{token}/ath
     if ath_data and isinstance(ath_data, dict):
-        current_ath = ath_data.get("highest_market_cap") or ath_data.get("marketCap", {}).get("usd") or 0
+        result["current_ath"] = ath_data.get("highest_market_cap") or ath_data.get("marketCap", {}).get("usd") or 0
 
-    return current_mc, current_ath
+    return result
 
 
-async def check_token(session: aiohttp.ClientSession, token: dict, check_day: int) -> dict | None:
-    """Check a single token's outcome"""
+async def check_token(session: aiohttp.ClientSession, token: dict, checkpoint: str) -> dict | None:
+    """Check a single token at a checkpoint - extracts MC, holders, liquidity, price, buys, sells"""
     contract_address = token["contract_address"]
     symbol = token.get("symbol", "???")
     mc_at_call = token.get("api_mc_usd", 0) or 0
-    ath_at_call = token.get("ath_market_cap", 0) or 0
-    excluded = token.get("excluded_from_analysis", 0)
     wallet_name = token.get("wallet_name", "?")
 
     if not mc_at_call or mc_at_call <= 0:
         logger.warning(f"⚠️ ${symbol}: No initial MC, skipping")
         return None
 
-    # Fetch current data (2 API calls in parallel)
-    current_mc, current_ath = await fetch_token_data(session, contract_address)
+    # Fetch current data (all fields from same API call)
+    data = await fetch_token_data(session, contract_address)
 
-    if current_mc == 0 and current_ath == 0:
-        # Token probably rugged or delisted
+    current_mc = data["current_mc"]
+    current_ath = data["current_ath"]
+
+    if current_mc == 0:
         logger.info(f"💀 ${symbol}: Token not found (likely rugged)")
-        current_mc = 0
-        current_ath = 0
 
-    # Update database with check result
-    result = update_token_check(
+    # Update database with all checkpoint data
+    result = update_token_checkpoint(
         contract_address=contract_address,
-        check_day=check_day,
+        checkpoint=checkpoint,
         current_mc=current_mc,
         current_ath=current_ath,
-        ath_at_call=ath_at_call,
-        mc_at_call=mc_at_call
+        mc_at_call=mc_at_call,
+        holders=data["holders"],
+        liquidity_usd=data["liquidity_usd"],
+        price_usd=data["price_usd"],
+        txns_buys=data["txns_buys"],
+        txns_sells=data["txns_sells"]
     )
 
     result["contract_address"] = contract_address
     result["symbol"] = symbol
     result["wallet_name"] = wallet_name
-    result["excluded"] = excluded
     result["mc_at_call"] = mc_at_call
-    result["current_mc"] = current_mc
-    result["current_ath"] = current_ath
-    result["ath_at_call"] = ath_at_call
 
-    # Log result
-    if excluded:
-        emoji = "⚠️"
-        status = "EXCLUDED"
-    elif result["detection_type"] == "ATH_CONFIRMED":
-        emoji = "🎯"
-        status = "ATH_CONFIRMED"
-    elif result["reached_x2"]:
-        emoji = "🚀"
-        status = "x2+"
+    # Log result with enriched data
+    if checkpoint == "7d":
+        multiple = result.get("true_multiple", 0)
+        if result.get("reached_x2"):
+            emoji = "🚀"
+        elif current_mc == 0:
+            emoji = "💀"
+        else:
+            emoji = "📉"
+        logger.info(
+            f"  {emoji} ${symbol} ({wallet_name}): "
+            f"${mc_at_call:.0f} → ${current_mc:.0f} (x{multiple:.2f}) | "
+            f"H:{data['holders'] or '?'} L:${data['liquidity_usd'] or 0:.0f}"
+        )
     else:
-        emoji = "📉"
-        status = "APPROX"
-
-    logger.info(
-        f"  {emoji} ${symbol} ({wallet_name}): "
-        f"${mc_at_call:.0f} → MC:${current_mc:.0f} ATH:${current_ath:.0f} "
-        f"(x{result['true_multiple']:.2f}) [{status}]"
-    )
+        change = ((current_mc / mc_at_call) - 1) * 100 if mc_at_call > 0 else 0
+        emoji = "📈" if change > 0 else "📉"
+        holders_info = f"H:{data['holders']}" if data['holders'] else ""
+        logger.info(f"  {emoji} ${symbol}: ${mc_at_call:.0f} → ${current_mc:.0f} ({change:+.1f}%) {holders_info}")
 
     return result
 
 
-async def run_check(check_day: int):
-    """Run checks for a specific day (1, 3, or 7)"""
+async def run_checkpoint(checkpoint: str):
+    """Run checks for a specific checkpoint"""
+    label = CHECKPOINT_LABELS.get(checkpoint, checkpoint)
     logger.info(f"\n{'='*60}")
-    logger.info(f"🔍 Running J+{check_day} check...")
+    logger.info(f"🔍 Running {label} checkpoint...")
     logger.info(f"📅 Current time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
     # Initialize database
     init_database()
 
     # Get tokens to check
-    tokens = get_tokens_for_check(check_day)
+    tokens = get_tokens_for_checkpoint(checkpoint)
 
     if not tokens:
-        logger.info(f"✅ No tokens to check for J+{check_day}")
-        return [], 0, 0
+        logger.info(f"✅ No tokens to check for {label}")
+        return [], 0
 
-    logger.info(f"📋 Found {len(tokens)} tokens for J+{check_day} check")
+    logger.info(f"📋 Found {len(tokens)} tokens for {label} checkpoint")
 
     # Process tokens
     results = []
-    included_count = 0
-    excluded_count = 0
+    processed_count = 0
 
     async with aiohttp.ClientSession() as session:
         for i, token in enumerate(tokens, 1):
             symbol = token.get("symbol", "???")
             logger.info(f"[{i}/{len(tokens)}] Checking ${symbol}...")
 
-            result = await check_token(session, token, check_day)
+            result = await check_token(session, token, checkpoint)
 
             if result:
                 results.append(result)
-                if result["excluded"]:
-                    excluded_count += 1
-                else:
-                    included_count += 1
+                processed_count += 1
 
             # Rate limiting
             await asyncio.sleep(0.3)
 
-    logger.info(f"✅ J+{check_day} check complete: {included_count} included, {excluded_count} excluded")
+    logger.info(f"✅ {label} checkpoint complete: {processed_count} tokens processed")
 
-    return results, included_count, excluded_count
+    return results, processed_count
 
 
 def print_report():
@@ -210,15 +247,6 @@ def print_report():
         print(f"\n📊 Winrate x2 (tokens inclus) : {x2/included*100:.1f}%")
         print(f"📊 Winrate x5 : {x5/included*100:.1f}%")
         print(f"📊 Winrate x10 : {x10/included*100:.1f}%")
-
-    # Detection type stats
-    detection_stats = get_detection_type_stats()
-    total_detected = sum(detection_stats.values()) if detection_stats else 0
-    if total_detected > 0:
-        ath_confirmed = detection_stats.get('ATH_CONFIRMED', 0)
-        approximation = detection_stats.get('APPROXIMATION', 0)
-        print(f"\n🔍 ATH_CONFIRMED : {ath_confirmed} ({ath_confirmed/total_detected*100:.1f}%)")
-        print(f"🔍 APPROXIMATION : {approximation} ({approximation/total_detected*100:.1f}%)")
 
     # Wallet stats
     wallet_stats = get_wallet_stats_detailed()
@@ -304,11 +332,12 @@ def print_report():
 
 async def main():
     """Main entry point"""
-    parser = argparse.ArgumentParser(description='Check token outcomes')
-    parser.add_argument('--day', type=int, choices=[1, 3, 7], default=7,
-                        help='Check day (1, 3, or 7). Default: 7')
+    parser = argparse.ArgumentParser(description='Check token outcomes at checkpoints')
+    parser.add_argument('--checkpoint', '-c', type=str,
+                        choices=list(CHECKPOINTS.keys()),
+                        help='Specific checkpoint to run (5min, 20min, 1h, 3h, 6h, 24h, 7d)')
     parser.add_argument('--all', action='store_true',
-                        help='Run all checks (J+1, J+3, J+7)')
+                        help='Run all checkpoints')
     parser.add_argument('--report-only', action='store_true',
                         help='Only print report, no API calls')
 
@@ -324,14 +353,18 @@ async def main():
         return
 
     if args.all:
-        # Run all checks
-        for day in [1, 3, 7]:
-            await run_check(day)
+        # Run all checkpoints
+        for checkpoint in CHECKPOINTS.keys():
+            await run_checkpoint(checkpoint)
+    elif args.checkpoint:
+        # Run specific checkpoint
+        await run_checkpoint(args.checkpoint)
     else:
-        # Run single check
-        await run_check(args.day)
+        # Default: run all checkpoints that have pending tokens
+        for checkpoint in CHECKPOINTS.keys():
+            await run_checkpoint(checkpoint)
 
-    # Update wallet stats
+    # Update wallet stats after 7d checkpoint
     logger.info("\n📊 Updating wallet statistics...")
     update_wallet_stats()
 

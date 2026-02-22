@@ -186,7 +186,8 @@ def parse_token_data(data: dict) -> dict:
                 result["lp_burn"] = 1 if lp_burn >= 100 else 0
             else:
                 result["lp_burn"] = 0
-            result["curve_percentage"] = best_pool.get("curvePercentage")
+            curve_pct = best_pool.get("curvePercentage")
+            result["curve_percentage"] = curve_pct if curve_pct is not None else "migrated"
 
             # Transactions (can be int or dict with "total" key)
             txns = best_pool.get("txns", {})
@@ -237,7 +238,6 @@ def parse_token_data(data: dict) -> dict:
     # Risk data
     risk = data.get("risk", {})
     result["risk_score"] = risk.get("score")
-    result["risk_rugged"] = 1 if risk.get("rugged") else 0
     result["risk_top10"] = risk.get("top10HoldersPercent")
 
     # BUG 6 FIX: Direct extraction of risk fields
@@ -367,27 +367,6 @@ def parse_first_buyers_data(data: dict | list) -> dict:
 
     if buyers:
         result["early_buyers_count"] = len(buyers)
-
-        # Compter ceux qui hold encore
-        still_holding = 0
-        total_pnl = 0
-        pnl_count = 0
-
-        for buyer in buyers:
-            if isinstance(buyer, dict):
-                # Check if still holding
-                current_value = buyer.get("currentValue", 0) or 0
-                if current_value > 0:
-                    still_holding += 1
-
-                # PnL
-                pnl = buyer.get("pnl")
-                if pnl is not None:
-                    total_pnl += pnl
-                    pnl_count += 1
-
-        result["early_buyers_still_holding"] = still_holding
-        result["early_buyers_avg_pnl"] = (total_pnl / pnl_count) if pnl_count > 0 else None
 
     return result
 

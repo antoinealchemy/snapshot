@@ -62,7 +62,6 @@ def init_database():
             token_age_minutes         INTEGER,
             platform                  TEXT,
             risk_score                INTEGER,
-            risk_rugged               INTEGER,
             risk_top10                REAL,
             risk_snipers              INTEGER,
             risk_insiders             INTEGER,
@@ -86,8 +85,6 @@ def init_database():
 
             -- /first-buyers/{token} - 1 appel
             early_buyers_count            INTEGER,
-            early_buyers_still_holding    INTEGER,
-            early_buyers_avg_pnl          REAL,
 
             -- Prix SOL au moment du signal
             sol_price_at_signal           REAL,
@@ -101,15 +98,61 @@ def init_database():
             -- Exclusion de l'analyse (ath_ratio < 0.5)
             excluded_from_analysis    INTEGER DEFAULT 0,
 
-            -- Vérifications multi-jours
-            checked_j1                INTEGER,
-            checked_j3                INTEGER,
-            checked_j7                INTEGER,
+            -- Checkpoints de suivi (données à chaque timestamp)
+            -- T+5min
+            mc_5min                   REAL,
+            holders_5min              INTEGER,
+            liquidity_5min            REAL,
+            price_5min                REAL,
+            buys_5min                 INTEGER,
+            sells_5min                INTEGER,
+            -- T+20min
+            mc_20min                  REAL,
+            holders_20min             INTEGER,
+            liquidity_20min           REAL,
+            price_20min               REAL,
+            buys_20min                INTEGER,
+            sells_20min               INTEGER,
+            -- T+1h
+            mc_1h                     REAL,
+            holders_1h                INTEGER,
+            liquidity_1h              REAL,
+            price_1h                  REAL,
+            buys_1h                   INTEGER,
+            sells_1h                  INTEGER,
+            -- T+3h
+            mc_3h                     REAL,
+            holders_3h                INTEGER,
+            liquidity_3h              REAL,
+            price_3h                  REAL,
+            buys_3h                   INTEGER,
+            sells_3h                  INTEGER,
+            -- T+6h
+            mc_6h                     REAL,
+            holders_6h                INTEGER,
+            liquidity_6h              REAL,
+            price_6h                  REAL,
+            buys_6h                   INTEGER,
+            sells_6h                  INTEGER,
+            -- T+24h
+            mc_24h                    REAL,
+            holders_24h               INTEGER,
+            liquidity_24h             REAL,
+            price_24h                 REAL,
+            buys_24h                  INTEGER,
+            sells_24h                 INTEGER,
+            -- T+7d
+            mc_7d                     REAL,
+            holders_7d                INTEGER,
+            liquidity_7d              REAL,
+            price_7d                  REAL,
+            buys_7d                   INTEGER,
+            sells_7d                  INTEGER,
 
-            -- Résultats
+            -- Résultats finaux (calculés à T+7d)
             current_ath_usd           REAL,
+            max_mc_reached            REAL,
             true_multiple             REAL,
-            detection_type            TEXT,
             reached_x2                INTEGER,
             reached_x5                INTEGER,
             reached_x10               INTEGER
@@ -156,13 +199,63 @@ def _migrate_add_columns(cursor):
         ("week_number", "INTEGER"),
         ("month", "INTEGER"),
         ("excluded_from_analysis", "INTEGER DEFAULT 0"),
-        ("checked_j1", "INTEGER"),
-        ("checked_j3", "INTEGER"),
-        ("checked_j7", "INTEGER"),
+        # Checkpoint columns - mc
+        ("mc_5min", "REAL"),
+        ("mc_20min", "REAL"),
+        ("mc_1h", "REAL"),
+        ("mc_3h", "REAL"),
+        ("mc_6h", "REAL"),
+        ("mc_24h", "REAL"),
+        ("mc_7d", "REAL"),
+        # Checkpoint columns - holders
+        ("holders_5min", "INTEGER"),
+        ("holders_20min", "INTEGER"),
+        ("holders_1h", "INTEGER"),
+        ("holders_3h", "INTEGER"),
+        ("holders_6h", "INTEGER"),
+        ("holders_24h", "INTEGER"),
+        ("holders_7d", "INTEGER"),
+        # Checkpoint columns - liquidity
+        ("liquidity_5min", "REAL"),
+        ("liquidity_20min", "REAL"),
+        ("liquidity_1h", "REAL"),
+        ("liquidity_3h", "REAL"),
+        ("liquidity_6h", "REAL"),
+        ("liquidity_24h", "REAL"),
+        ("liquidity_7d", "REAL"),
+        # Checkpoint columns - price
+        ("price_5min", "REAL"),
+        ("price_20min", "REAL"),
+        ("price_1h", "REAL"),
+        ("price_3h", "REAL"),
+        ("price_6h", "REAL"),
+        ("price_24h", "REAL"),
+        ("price_7d", "REAL"),
+        # Checkpoint columns - buys
+        ("buys_5min", "INTEGER"),
+        ("buys_20min", "INTEGER"),
+        ("buys_1h", "INTEGER"),
+        ("buys_3h", "INTEGER"),
+        ("buys_6h", "INTEGER"),
+        ("buys_24h", "INTEGER"),
+        ("buys_7d", "INTEGER"),
+        # Checkpoint columns - sells
+        ("sells_5min", "INTEGER"),
+        ("sells_20min", "INTEGER"),
+        ("sells_1h", "INTEGER"),
+        ("sells_3h", "INTEGER"),
+        ("sells_6h", "INTEGER"),
+        ("sells_24h", "INTEGER"),
+        ("sells_7d", "INTEGER"),
+        # Final results
         ("current_ath_usd", "REAL"),
+        ("max_mc_reached", "REAL"),
         ("true_multiple", "REAL"),
-        ("detection_type", "TEXT"),
     ]
+
+    # Columns to remove (if they exist, we'll just ignore them)
+    deprecated_columns = ["checked_j1", "checked_j3", "checked_j7", "detection_type",
+                          "risk_rugged", "early_buyers_still_holding", "early_buyers_avg_pnl"]
 
     for col_name, col_type in new_columns:
         if col_name not in existing_columns:
@@ -252,18 +345,41 @@ def insert_snapshot(data: dict) -> bool:
         return False
 
 
-def get_unchecked_tokens(min_age_seconds: int = 604800) -> list:
-    """Get tokens that haven't been checked and are older than min_age_seconds (legacy)"""
+# Checkpoint definitions: name -> seconds delay
+CHECKPOINTS = {
+    "5min": 5 * 60,
+    "20min": 20 * 60,
+    "1h": 60 * 60,
+    "3h": 3 * 60 * 60,
+    "6h": 6 * 60 * 60,
+    "24h": 24 * 60 * 60,
+    "7d": 7 * 24 * 60 * 60,
+}
+
+
+def get_tokens_for_checkpoint(checkpoint: str) -> list:
+    """
+    Get tokens ready for a specific checkpoint.
+    checkpoint: "5min", "20min", "1h", "3h", "6h", "24h", "7d"
+    Returns tokens where:
+    - Age >= checkpoint delay
+    - This checkpoint hasn't been recorded yet
+    """
+    if checkpoint not in CHECKPOINTS:
+        raise ValueError(f"Invalid checkpoint: {checkpoint}. Valid: {list(CHECKPOINTS.keys())}")
+
     conn = get_connection()
     cursor = conn.cursor()
 
+    min_age_seconds = CHECKPOINTS[checkpoint]
     cutoff = int(time.time()) - min_age_seconds
+    mc_col = f"mc_{checkpoint}"
 
-    cursor.execute("""
+    cursor.execute(f"""
         SELECT contract_address, symbol, api_mc_usd, wallet_name, first_detected_at,
                ath_market_cap, excluded_from_analysis
         FROM token_snapshots
-        WHERE checked_j7 IS NULL
+        WHERE {mc_col} IS NULL
         AND first_detected_at < ?
     """, (cutoff,))
 
@@ -272,138 +388,136 @@ def get_unchecked_tokens(min_age_seconds: int = 604800) -> list:
     return [dict(row) for row in results]
 
 
-def get_tokens_for_check(check_day: int) -> list:
-    """
-    Get tokens ready for a specific day check.
-    check_day: 1, 3, or 7
-    Returns tokens where:
-    - Age >= check_day days
-    - This check hasn't been done yet
-    - Not already ATH_CONFIRMED (for J+1 and J+3)
-    """
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    min_age_seconds = check_day * 24 * 3600
-    cutoff = int(time.time()) - min_age_seconds
-
-    check_col = f"checked_j{check_day}"
-
-    if check_day == 7:
-        # J+7: check all unchecked
-        cursor.execute(f"""
-            SELECT contract_address, symbol, api_mc_usd, wallet_name, first_detected_at,
-                   ath_market_cap, excluded_from_analysis, detection_type
-            FROM token_snapshots
-            WHERE {check_col} IS NULL
-            AND first_detected_at < ?
-        """, (cutoff,))
-    else:
-        # J+1, J+3: skip if already ATH_CONFIRMED
-        cursor.execute(f"""
-            SELECT contract_address, symbol, api_mc_usd, wallet_name, first_detected_at,
-                   ath_market_cap, excluded_from_analysis, detection_type
-            FROM token_snapshots
-            WHERE {check_col} IS NULL
-            AND first_detected_at < ?
-            AND (detection_type IS NULL OR detection_type != 'ATH_CONFIRMED')
-        """, (cutoff,))
-
-    results = cursor.fetchall()
-    conn.close()
-    return [dict(row) for row in results]
-
-
-def update_token_outcome(contract_address: str, market_cap_7d: float, initial_mc: float):
-    """Update token with 7-day outcome (legacy compatibility)"""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    max_multiple = market_cap_7d / initial_mc if initial_mc and initial_mc > 0 else 0
-
-    cursor.execute("""
-        UPDATE token_snapshots
-        SET checked_j7 = ?,
-            true_multiple = ?,
-            reached_x2 = ?,
-            reached_x5 = ?,
-            reached_x10 = ?
-        WHERE contract_address = ?
-    """, (
-        int(time.time()),
-        max_multiple,
-        1 if max_multiple >= 2 else 0,
-        1 if max_multiple >= 5 else 0,
-        1 if max_multiple >= 10 else 0,
-        contract_address
-    ))
-
-    conn.commit()
-    conn.close()
-
-
-def update_token_check(
+def update_token_checkpoint(
     contract_address: str,
-    check_day: int,
+    checkpoint: str,
     current_mc: float,
-    current_ath: float,
-    ath_at_call: float,
-    mc_at_call: float
+    current_ath: float = None,
+    mc_at_call: float = None,
+    holders: int = None,
+    liquidity_usd: float = None,
+    price_usd: float = None,
+    txns_buys: int = None,
+    txns_sells: int = None
 ) -> dict:
     """
-    Update token with check results for a specific day.
-    Returns the result dict with detection_type and multiple.
+    Update token with checkpoint data (mc, holders, liquidity, price, buys, sells).
+    For the final checkpoint (7d), also calculates final results.
     """
+    if checkpoint not in CHECKPOINTS:
+        raise ValueError(f"Invalid checkpoint: {checkpoint}")
+
     conn = get_connection()
     cursor = conn.cursor()
 
-    check_col = f"checked_j{check_day}"
+    # Column names for this checkpoint
+    mc_col = f"mc_{checkpoint}"
+    holders_col = f"holders_{checkpoint}"
+    liquidity_col = f"liquidity_{checkpoint}"
+    price_col = f"price_{checkpoint}"
+    buys_col = f"buys_{checkpoint}"
+    sells_col = f"sells_{checkpoint}"
 
-    # Determine detection type and multiple
-    if current_ath > ath_at_call and ath_at_call > 0:
-        # New ATH confirmed
-        detection_type = "ATH_CONFIRMED"
-        true_multiple = current_ath / mc_at_call if mc_at_call > 0 else 0
+    if checkpoint == "7d":
+        # Final checkpoint: calculate all results
+        # First get the max MC from all checkpoints
+        cursor.execute("""
+            SELECT api_mc_usd, mc_5min, mc_20min, mc_1h, mc_3h, mc_6h, mc_24h, ath_market_cap
+            FROM token_snapshots WHERE contract_address = ?
+        """, (contract_address,))
+        row = cursor.fetchone()
+
+        if row:
+            all_mcs = [row['api_mc_usd'], row['mc_5min'], row['mc_20min'],
+                       row['mc_1h'], row['mc_3h'], row['mc_6h'], row['mc_24h'], current_mc]
+            all_mcs = [mc for mc in all_mcs if mc is not None and mc > 0]
+            max_mc = max(all_mcs) if all_mcs else current_mc
+
+            initial_mc = row['api_mc_usd'] or mc_at_call or 0
+            ath_at_call = row['ath_market_cap'] or 0
+
+            # Use ATH if it increased, otherwise use max observed MC
+            if current_ath and current_ath > ath_at_call and ath_at_call > 0:
+                max_mc = max(max_mc, current_ath)
+
+            true_multiple = max_mc / initial_mc if initial_mc > 0 else 0
+
+            cursor.execute(f"""
+                UPDATE token_snapshots
+                SET {mc_col} = ?,
+                    {holders_col} = ?,
+                    {liquidity_col} = ?,
+                    {price_col} = ?,
+                    {buys_col} = ?,
+                    {sells_col} = ?,
+                    current_ath_usd = ?,
+                    max_mc_reached = ?,
+                    true_multiple = ?,
+                    reached_x2 = ?,
+                    reached_x5 = ?,
+                    reached_x10 = ?
+                WHERE contract_address = ?
+            """, (
+                current_mc,
+                holders,
+                liquidity_usd,
+                price_usd,
+                txns_buys,
+                txns_sells,
+                current_ath,
+                max_mc,
+                true_multiple,
+                1 if true_multiple >= 2 else 0,
+                1 if true_multiple >= 5 else 0,
+                1 if true_multiple >= 10 else 0,
+                contract_address
+            ))
+        else:
+            cursor.execute(f"""
+                UPDATE token_snapshots
+                SET {mc_col} = ?, {holders_col} = ?, {liquidity_col} = ?,
+                    {price_col} = ?, {buys_col} = ?, {sells_col} = ?
+                WHERE contract_address = ?
+            """, (current_mc, holders, liquidity_usd, price_usd, txns_buys, txns_sells, contract_address))
+
+        conn.commit()
+        conn.close()
+
+        return {
+            "checkpoint": checkpoint,
+            "current_mc": current_mc,
+            "holders": holders,
+            "liquidity_usd": liquidity_usd,
+            "price_usd": price_usd,
+            "txns_buys": txns_buys,
+            "txns_sells": txns_sells,
+            "max_mc_reached": max_mc if row else current_mc,
+            "true_multiple": true_multiple if row else 0,
+            "reached_x2": 1 if (row and true_multiple >= 2) else 0,
+            "reached_x5": 1 if (row and true_multiple >= 5) else 0,
+            "reached_x10": 1 if (row and true_multiple >= 10) else 0,
+        }
     else:
-        # Approximation based on current MC
-        detection_type = "APPROXIMATION"
-        true_multiple = current_mc / mc_at_call if mc_at_call > 0 else 0
+        # Intermediate checkpoint: store all checkpoint data
+        cursor.execute(f"""
+            UPDATE token_snapshots
+            SET {mc_col} = ?, {holders_col} = ?, {liquidity_col} = ?,
+                {price_col} = ?, {buys_col} = ?, {sells_col} = ?
+            WHERE contract_address = ?
+        """, (current_mc, holders, liquidity_usd, price_usd, txns_buys, txns_sells, contract_address))
 
-    reached_x2 = 1 if true_multiple >= 2 else 0
-    reached_x5 = 1 if true_multiple >= 5 else 0
-    reached_x10 = 1 if true_multiple >= 10 else 0
+        conn.commit()
+        conn.close()
 
-    cursor.execute(f"""
-        UPDATE token_snapshots
-        SET {check_col} = ?,
-            current_ath_usd = ?,
-            true_multiple = ?,
-            detection_type = ?,
-            reached_x2 = ?,
-            reached_x5 = ?,
-            reached_x10 = ?
-        WHERE contract_address = ?
-    """, (
-        int(time.time()),
-        current_ath,
-        true_multiple,
-        detection_type,
-        reached_x2,
-        reached_x5,
-        reached_x10,
-        contract_address
-    ))
-
-    conn.commit()
-    conn.close()
-
-    return {
-        "detection_type": detection_type,
-        "true_multiple": true_multiple,
-        "reached_x2": reached_x2,
-        "reached_x5": reached_x5,
-        "reached_x10": reached_x10,
-    }
+        return {
+            "checkpoint": checkpoint,
+            "current_mc": current_mc,
+            "holders": holders,
+            "liquidity_usd": liquidity_usd,
+            "price_usd": price_usd,
+            "txns_buys": txns_buys,
+            "txns_sells": txns_sells,
+        }
 
 
 def update_wallet_stats():
@@ -418,7 +532,7 @@ def update_wallet_stats():
             COUNT(*) as total_signals,
             SUM(CASE WHEN reached_x2 = 1 THEN 1 ELSE 0 END) as total_x2
         FROM token_snapshots
-        WHERE checked_j7 IS NOT NULL
+        WHERE mc_7d IS NOT NULL
         AND excluded_from_analysis = 0
         GROUP BY wallet_name
     """)
@@ -458,7 +572,7 @@ def get_stats_by_day_of_week() -> list:
             COUNT(*) as total,
             SUM(CASE WHEN reached_x2 = 1 THEN 1 ELSE 0 END) as x2_count
         FROM token_snapshots
-        WHERE checked_j7 IS NOT NULL
+        WHERE mc_7d IS NOT NULL
         AND excluded_from_analysis = 0
         AND day_of_week IS NOT NULL
         GROUP BY day_of_week
@@ -481,7 +595,7 @@ def get_stats_by_hour_range() -> list:
             COUNT(*) as total,
             SUM(CASE WHEN reached_x2 = 1 THEN 1 ELSE 0 END) as x2_count
         FROM token_snapshots
-        WHERE checked_j7 IS NOT NULL
+        WHERE mc_7d IS NOT NULL
         AND excluded_from_analysis = 0
         AND hour_utc IS NOT NULL
         GROUP BY hour_range
@@ -510,7 +624,7 @@ def get_stats_by_platform() -> list:
             COUNT(*) as total,
             SUM(CASE WHEN reached_x2 = 1 THEN 1 ELSE 0 END) as x2_count
         FROM token_snapshots
-        WHERE checked_j7 IS NOT NULL
+        WHERE mc_7d IS NOT NULL
         AND excluded_from_analysis = 0
         GROUP BY platform_name
         ORDER BY total DESC
@@ -533,7 +647,7 @@ def get_stats_by_sol_price() -> list:
             COUNT(*) as total,
             SUM(CASE WHEN reached_x2 = 1 THEN 1 ELSE 0 END) as x2_count
         FROM token_snapshots
-        WHERE checked_j7 IS NOT NULL
+        WHERE mc_7d IS NOT NULL
         AND excluded_from_analysis = 0
         AND sol_price_at_signal IS NOT NULL
         GROUP BY range_start
@@ -569,10 +683,10 @@ def get_wallet_stats_detailed() -> list:
             SUM(CASE WHEN reached_x10 = 1 THEN 1 ELSE 0 END) as x10_count,
             (SELECT platform FROM token_snapshots t2
              WHERE t2.wallet_name = token_snapshots.wallet_name
-             AND t2.checked_j7 IS NOT NULL
+             AND t2.mc_7d IS NOT NULL
              GROUP BY platform ORDER BY COUNT(*) DESC LIMIT 1) as dominant_platform
         FROM token_snapshots
-        WHERE checked_j7 IS NOT NULL
+        WHERE mc_7d IS NOT NULL
         AND excluded_from_analysis = 0
         AND wallet_name IS NOT NULL
         GROUP BY wallet_name
@@ -585,26 +699,6 @@ def get_wallet_stats_detailed() -> list:
     return [dict(row) for row in results]
 
 
-def get_detection_type_stats() -> dict:
-    """Get statistics on detection types"""
-    conn = get_connection()
-    cursor = conn.cursor()
-
-    cursor.execute("""
-        SELECT
-            detection_type,
-            COUNT(*) as count
-        FROM token_snapshots
-        WHERE checked_j7 IS NOT NULL
-        AND excluded_from_analysis = 0
-        GROUP BY detection_type
-    """)
-
-    results = {row['detection_type']: row['count'] for row in cursor.fetchall()}
-    conn.close()
-    return results
-
-
 def get_global_stats() -> dict:
     """Get global statistics (separating included and excluded tokens)"""
     conn = get_connection()
@@ -613,12 +707,12 @@ def get_global_stats() -> dict:
     cursor.execute("""
         SELECT
             COUNT(*) as total_tokens,
-            SUM(CASE WHEN checked_j7 IS NOT NULL THEN 1 ELSE 0 END) as checked_tokens,
-            SUM(CASE WHEN excluded_from_analysis = 1 AND checked_j7 IS NOT NULL THEN 1 ELSE 0 END) as excluded_tokens,
+            SUM(CASE WHEN mc_7d IS NOT NULL THEN 1 ELSE 0 END) as checked_tokens,
+            SUM(CASE WHEN excluded_from_analysis = 1 AND mc_7d IS NOT NULL THEN 1 ELSE 0 END) as excluded_tokens,
             SUM(CASE WHEN reached_x2 = 1 AND excluded_from_analysis = 0 THEN 1 ELSE 0 END) as total_x2,
             SUM(CASE WHEN reached_x5 = 1 AND excluded_from_analysis = 0 THEN 1 ELSE 0 END) as total_x5,
             SUM(CASE WHEN reached_x10 = 1 AND excluded_from_analysis = 0 THEN 1 ELSE 0 END) as total_x10,
-            SUM(CASE WHEN checked_j7 IS NOT NULL AND excluded_from_analysis = 0 THEN 1 ELSE 0 END) as included_tokens
+            SUM(CASE WHEN mc_7d IS NOT NULL AND excluded_from_analysis = 0 THEN 1 ELSE 0 END) as included_tokens
         FROM token_snapshots
     """)
 
