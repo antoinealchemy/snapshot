@@ -153,12 +153,16 @@ def init_database():
             buys_7d                   INTEGER,
             sells_7d                  INTEGER,
 
-            -- Résultats finaux (calculés à T+7d)
+            -- Résultats (mis à jour à chaque checkpoint)
             current_ath_usd           REAL,
             true_multiple             REAL,
             reached_x2                INTEGER,
+            reached_x3                INTEGER,
             reached_x5                INTEGER,
-            reached_x10               INTEGER
+            reached_x10               INTEGER,
+            reached_x20               INTEGER,
+            reached_x50               INTEGER,
+            reached_x100              INTEGER
         )
     """)
 
@@ -258,9 +262,13 @@ def _migrate_add_columns(cursor):
         ("sells_6h", "INTEGER"),
         ("sells_24h", "INTEGER"),
         ("sells_7d", "INTEGER"),
-        # Final results
+        # Results (updated at each checkpoint)
         ("current_ath_usd", "REAL"),
         ("true_multiple", "REAL"),
+        ("reached_x3", "INTEGER"),
+        ("reached_x20", "INTEGER"),
+        ("reached_x50", "INTEGER"),
+        ("reached_x100", "INTEGER"),
     ]
 
     # Columns to remove (if they exist, we'll just ignore them)
@@ -413,7 +421,7 @@ def update_token_checkpoint(
 ) -> dict:
     """
     Update token with checkpoint data (mc, holders, liquidity, price, buys, sells).
-    For the final checkpoint (7d), also calculates final results.
+    Calculates multiples at EVERY checkpoint based on current ATH vs initial MC.
     """
     if checkpoint not in CHECKPOINTS:
         raise ValueError(f"Invalid checkpoint: {checkpoint}")
@@ -430,106 +438,104 @@ def update_token_checkpoint(
     buys_col = f"buys_{checkpoint}"
     sells_col = f"sells_{checkpoint}"
 
-    if checkpoint == "7d":
-        # Final checkpoint: calculate all results
-        # First get the max MC from all checkpoints
-        cursor.execute("""
-            SELECT api_mc_usd, mc_5min, mc_20min, mc_1h, mc_3h, mc_6h, mc_24h, ath_market_cap
-            FROM token_snapshots WHERE contract_address = ?
-        """, (contract_address,))
-        row = cursor.fetchone()
+    # Get initial MC and current reached values
+    cursor.execute("""
+        SELECT api_mc_usd, ath_market_cap, current_ath_usd, true_multiple,
+               reached_x2, reached_x3, reached_x5, reached_x10, reached_x20, reached_x50, reached_x100
+        FROM token_snapshots WHERE contract_address = ?
+    """, (contract_address,))
+    row = cursor.fetchone()
 
-        if row:
-            all_mcs = [row['api_mc_usd'], row['mc_5min'], row['mc_20min'],
-                       row['mc_1h'], row['mc_3h'], row['mc_6h'], row['mc_24h'], current_mc]
-            all_mcs = [mc for mc in all_mcs if mc is not None and mc > 0]
-            max_mc = max(all_mcs) if all_mcs else current_mc
-
-            initial_mc = row['api_mc_usd'] or mc_at_call or 0
-            ath_at_call = row['ath_market_cap'] or 0
-
-            # Use ATH if it increased, otherwise use max observed MC
-            if current_ath and current_ath > ath_at_call and ath_at_call > 0:
-                max_mc = max(max_mc, current_ath)
-
-            true_multiple = max_mc / initial_mc if initial_mc > 0 else 0
-
-            cursor.execute(f"""
-                UPDATE token_snapshots
-                SET {mc_col} = ?,
-                    {ath_col} = ?,
-                    {holders_col} = ?,
-                    {liquidity_col} = ?,
-                    {price_col} = ?,
-                    {buys_col} = ?,
-                    {sells_col} = ?,
-                    current_ath_usd = ?,
-                    true_multiple = ?,
-                    reached_x2 = ?,
-                    reached_x5 = ?,
-                    reached_x10 = ?
-                WHERE contract_address = ?
-            """, (
-                current_mc,
-                current_ath,
-                holders,
-                liquidity_usd,
-                price_usd,
-                txns_buys,
-                txns_sells,
-                current_ath,
-                true_multiple,
-                1 if true_multiple >= 2 else 0,
-                1 if true_multiple >= 5 else 0,
-                1 if true_multiple >= 10 else 0,
-                contract_address
-            ))
-        else:
-            cursor.execute(f"""
-                UPDATE token_snapshots
-                SET {mc_col} = ?, {ath_col} = ?, {holders_col} = ?, {liquidity_col} = ?,
-                    {price_col} = ?, {buys_col} = ?, {sells_col} = ?
-                WHERE contract_address = ?
-            """, (current_mc, current_ath, holders, liquidity_usd, price_usd, txns_buys, txns_sells, contract_address))
-
-        conn.commit()
+    if not row:
+        # Token not found, just return
         conn.close()
+        return {"checkpoint": checkpoint, "error": "Token not found"}
 
-        return {
-            "checkpoint": checkpoint,
-            "current_mc": current_mc,
-            "holders": holders,
-            "liquidity_usd": liquidity_usd,
-            "price_usd": price_usd,
-            "txns_buys": txns_buys,
-            "txns_sells": txns_sells,
-            "true_multiple": true_multiple if row else 0,
-            "reached_x2": 1 if (row and true_multiple >= 2) else 0,
-            "reached_x5": 1 if (row and true_multiple >= 5) else 0,
-            "reached_x10": 1 if (row and true_multiple >= 10) else 0,
-        }
-    else:
-        # Intermediate checkpoint: store all checkpoint data including ATH
-        cursor.execute(f"""
-            UPDATE token_snapshots
-            SET {mc_col} = ?, {ath_col} = ?, {holders_col} = ?, {liquidity_col} = ?,
-                {price_col} = ?, {buys_col} = ?, {sells_col} = ?
-            WHERE contract_address = ?
-        """, (current_mc, current_ath, holders, liquidity_usd, price_usd, txns_buys, txns_sells, contract_address))
+    initial_mc = row['api_mc_usd'] or mc_at_call or 0
+    ath_at_call = row['ath_market_cap'] or 0
+    prev_ath = row['current_ath_usd'] or ath_at_call or 0
+    prev_multiple = row['true_multiple'] or 0
 
-        conn.commit()
-        conn.close()
+    # Calculate best ATH seen so far
+    best_ath = max(prev_ath, current_ath or 0, current_mc or 0)
 
-        return {
-            "checkpoint": checkpoint,
-            "current_mc": current_mc,
-            "current_ath": current_ath,
-            "holders": holders,
-            "liquidity_usd": liquidity_usd,
-            "price_usd": price_usd,
-            "txns_buys": txns_buys,
-            "txns_sells": txns_sells,
-        }
+    # Calculate true multiple based on best ATH vs initial MC
+    true_multiple = best_ath / initial_mc if initial_mc > 0 else 0
+
+    # Keep the highest multiple seen
+    true_multiple = max(true_multiple, prev_multiple)
+
+    # Update reached_x* - once reached, stays reached (use OR logic)
+    reached_x2 = 1 if (row['reached_x2'] or true_multiple >= 2) else 0
+    reached_x3 = 1 if (row['reached_x3'] or true_multiple >= 3) else 0
+    reached_x5 = 1 if (row['reached_x5'] or true_multiple >= 5) else 0
+    reached_x10 = 1 if (row['reached_x10'] or true_multiple >= 10) else 0
+    reached_x20 = 1 if (row['reached_x20'] or true_multiple >= 20) else 0
+    reached_x50 = 1 if (row['reached_x50'] or true_multiple >= 50) else 0
+    reached_x100 = 1 if (row['reached_x100'] or true_multiple >= 100) else 0
+
+    # Update database with checkpoint data AND multiple calculations
+    cursor.execute(f"""
+        UPDATE token_snapshots
+        SET {mc_col} = ?,
+            {ath_col} = ?,
+            {holders_col} = ?,
+            {liquidity_col} = ?,
+            {price_col} = ?,
+            {buys_col} = ?,
+            {sells_col} = ?,
+            current_ath_usd = ?,
+            true_multiple = ?,
+            reached_x2 = ?,
+            reached_x3 = ?,
+            reached_x5 = ?,
+            reached_x10 = ?,
+            reached_x20 = ?,
+            reached_x50 = ?,
+            reached_x100 = ?
+        WHERE contract_address = ?
+    """, (
+        current_mc,
+        current_ath,
+        holders,
+        liquidity_usd,
+        price_usd,
+        txns_buys,
+        txns_sells,
+        best_ath,
+        true_multiple,
+        reached_x2,
+        reached_x3,
+        reached_x5,
+        reached_x10,
+        reached_x20,
+        reached_x50,
+        reached_x100,
+        contract_address
+    ))
+
+    conn.commit()
+    conn.close()
+
+    return {
+        "checkpoint": checkpoint,
+        "current_mc": current_mc,
+        "current_ath": current_ath,
+        "best_ath": best_ath,
+        "holders": holders,
+        "liquidity_usd": liquidity_usd,
+        "price_usd": price_usd,
+        "txns_buys": txns_buys,
+        "txns_sells": txns_sells,
+        "true_multiple": true_multiple,
+        "reached_x2": reached_x2,
+        "reached_x3": reached_x3,
+        "reached_x5": reached_x5,
+        "reached_x10": reached_x10,
+        "reached_x20": reached_x20,
+        "reached_x50": reached_x50,
+        "reached_x100": reached_x100,
+    }
 
 
 def update_wallet_stats():
