@@ -435,3 +435,153 @@ ssh ubuntu@51.210.9.196 "redis-cli get hybrid_active_calls | python3 -c 'import 
 # Rollback si nécessaire
 ssh ubuntu@51.210.9.196 "cd ~/captn && git revert HEAD && ./restart_captn.sh"
 ```
+
+---
+
+## Mise à jour – 01 Mars 2026
+
+### Changements appliqués ce jour
+
+#### Revert filtres DEGEN (commits session 01/03)
+
+Les filtres DEGEN ont été restaurés à leur état original suite au constat
+que les nouveaux filtres (MC 20-40K + Txns≥200) bloquaient 100% des calls.
+
+| Critère   | Nouvelle version (annulée) | Version restaurée       |
+|-----------|---------------------------|-------------------------|
+| MC Range  | 20K - 40K                 | 20K - 500K              |
+| Volume 5m | ≥ $2K fixe                | 1K/4K/10K/20K selon MC  |
+| Txns 5m   | ≥ 200                     | Pas de filtre           |
+| Holders   | ≥ 100                     | Pas de filtre           |
+| ATH ratio | ≥ 20% (inchangé)          | ≥ 20% (inchangé)        |
+
+**Raison** : Les filtres Txns≥200 et Holders≥100 se basaient sur `extract_txns_total()`
+qui retournait systématiquement 0 à cause d'un bug (voir ci-dessous).
+
+#### Bug critique identifié et corrigé : Champ txns API
+
+**Problème** : La fonction `extract_txns_total()` cherchait `stats.5m.txns.buys` et
+`stats.5m.txns.sells` mais l'API Solana Tracker retourne `stats.5m.buys` et
+`stats.5m.sells` directement (format int, pas objet imbriqué).
+
+**Conséquence** : Tous les tokens étaient rejetés sur le critère Txns≥200 car
+la fonction retournait toujours 0.
+
+**Fix appliqué** :
+```python
+# AVANT (incorrect)
+txns = m5.get("txns", {})
+buys = txns.get("buys", 0)
+sells = txns.get("sells", 0)
+
+# APRÈS (correct)
+txns = m5.get("transactions")  # Champ direct
+if not txns:
+    buys = m5.get("buys", 0)  # Fallback
+    sells = m5.get("sells", 0)
+    txns = buys + sells
+```
+
+#### Bug doublons de messages de résultats
+
+**Problème** : Les messages x2/x3/x5 étaient envoyés en double (~1 min d'intervalle).
+
+**Cause identifiée** : Un même token (ex: $OIL) pouvait avoir plusieurs entrées
+dans Redis avec des `call_id` différents (timestamps différents). Chaque entrée
+déclenchait son propre tracker, envoyant des messages parallèles pour le même événement.
+
+**Exemple concret** :
+- Entrée 1: `7YD8...pump_1740776531` → tracker A
+- Entrée 2: `7YD8...pump_1740776592` → tracker B
+- Les deux envoient "x2 atteint" quand le token pump
+
+**Fix appliqué** : Ajout de `_find_existing_tracking()` dans `MultiplesTracker`
+qui vérifie si un tracking existe déjà pour le même `contract_address` (pas `call_id`).
+Si oui, les canaux sont fusionnés au lieu de créer un doublon.
+
+```python
+def _find_existing_tracking(self, contract_address):
+    for existing_call_id, data in self.active_calls.items():
+        if data.get("contract_address") == contract_address:
+            return existing_call_id
+    return None
+```
+
+---
+
+### Simulation filtres VIP SAFE sur CSV (7 derniers jours)
+
+**Période analysée** : 21-28 février 2026 (1023 tokens, 738 non-exclus)
+
+#### Filtres VIP SAFE actuels testés
+
+```sql
+WHERE api_mc_usd BETWEEN 20000 AND 40000
+  AND volume_5m_usd >= 10000
+  AND txns_total >= 200
+  AND holders >= 100
+  AND ath_ratio >= 0.5
+  AND excluded_from_analysis = 0
+```
+
+**Résultat** : 62 tokens → **8.9 calls/jour**, **50.0% winrate**
+
+#### Diagnostic par critère
+
+| Critère | Tokens passants | % du total |
+|---------|-----------------|------------|
+| MC 20-40K | 162 | 15.8% |
+| Volume ≥10K | 426 | 41.6% |
+| Txns ≥200 | 696 | 68.0% |
+| Holders ≥100 | 442 | 43.2% |
+| ATH ≥50% | 738 | 72.1% |
+
+**Goulot d'étranglement** : MC 20-40K (seulement 15.8% des tokens)
+
+#### Variantes testées
+
+| Variante | MC | Vol | Txns | Hold | N/j | Winrate |
+|----------|----|-----|------|------|-----|---------|
+| **Actuel** | 20-40K | ≥10K | ≥200 | ≥100 | 8.9 | 50.0% |
+| V2 txns↓ | 20-40K | ≥10K | ≥100 | ≥100 | 9.6 | 49.3% |
+| V3 MC↑ | 20-50K | ≥10K | ≥200 | ≥100 | 11.7 | 43.9% |
+| V4 loose | 20-40K | ≥5K | ≥150 | ≥75 | 11.1 | 44.9% |
+| V8 Txns↓↓ | 20-40K | ≥10K | ≥50 | ≥100 | 10.0 | 50.0% |
+| **COMBO4** | 20-40K | ≥15K | ≥200 | ≥100 | 6.9 | **54.2%** |
+
+**Observation clé** : Aucune variante n'atteint l'objectif de 60% winrate sur cette période.
+Le maximum observé est 54.2% avec COMBO4 (ATH≥60% + Vol≥15K) mais avec seulement 6.9 calls/jour.
+
+#### Filtres plus stricts (recherche de winrate élevé)
+
+| Test | N | N/jour | Winrate |
+|------|---|--------|---------|
+| ATH≥60% | 54 | 7.7 | 53.7% |
+| ATH≥70% | 46 | 6.6 | 50.0% |
+| ATH≥80% | 32 | 4.6 | 46.9% |
+| Vol≥15K | 55 | 7.9 | 49.1% |
+| Vol≥20K | 51 | 7.3 | 49.0% |
+
+**Conclusion** : Le dataset actuel (7 jours) plafonne à ~50-54% winrate.
+L'objectif de 60% était peut-être basé sur une période de marché plus favorable.
+
+---
+
+### Volume de calls attendu
+
+Basé sur la simulation CSV :
+
+| Canal | Filtres | Calls/jour estimé | Winrate estimé |
+|-------|---------|-------------------|----------------|
+| VIP SAFE | MC 20-40K, Vol≥10K, Txns≥200, Hold≥100, ATH≥50% | 8-9 | ~50% |
+| PUBLIC | Identique VIP SAFE | 8-9 | ~50% |
+| DEGEN | MC 20-500K, Vol progressif, ATH≥20% | 25-30 | ~42% |
+
+**Écart avec objectif initial** :
+- Objectif : 10-15 calls/jour, 60% winrate
+- Réalité : 8-9 calls/jour, 50% winrate
+
+**Recommandations** :
+1. Accepter le winrate ~50% comme réaliste pour cette période
+2. Ou réduire le volume à ~5-7 calls/jour pour atteindre 54% (COMBO4)
+3. Collecter plus de données pour identifier des patterns plus discriminants
