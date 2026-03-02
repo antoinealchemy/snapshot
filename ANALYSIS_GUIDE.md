@@ -909,3 +909,96 @@ ssh ubuntu@51.210.9.196 "grep '✅ VIP SAFE' ~/captn/hybrid_tracker_bot.log | wc
 **Commits** :
 - `b6fd313` - fix: filter and tracking improvements (captn)
 - Session docs (snapshot)
+
+---
+
+## Session – 02/03/2026
+
+### Contexte
+
+- **Problème identifié** : Les filtres VIP SAFE v2 (MC 15-50K + PC≥20%) généraient seulement ~4 calls/jour au lieu des 8 attendus
+- **Cause** : 64% des tokens ont un MC < 20K, et le filtre Price Change bloquait beaucoup de tokens
+- **Winrate observé** : 33% sur 6 tokens (2/6 ont fait x2+, dont $ASLAN x8)
+
+### Analyse du CSV (22-28 février)
+
+| Métrique | Valeur |
+|----------|--------|
+| Total tokens | 1062 |
+| Source SAFE | 576 |
+| Source DEGEN | 486 |
+| MC < 20K | 685 (64%) |
+| MC > 100K | 100 (9%) |
+
+**Goulot d'étranglement principal** : La majorité des tokens sont trop "early" (MC < 20K).
+
+### Nouveaux filtres déployés
+
+#### VIP SAFE + PUBLIC (v3)
+
+| MC Range | Volume requis |
+|----------|---------------|
+| 20-30K | ≥ $5K |
+| 30-50K | ≥ $8K |
+| 50-70K | ≥ $13K |
+| 70-100K | ≥ $20K |
+
++ ATH ratio ≥ 50%
++ **Suppression du filtre Price Change 5m**
+
+**Changements vs v2** :
+- MC élargi : 15-50K → 20-100K
+- Volume : seuil unique $2K → barème progressif
+- Price Change : ≥20% → supprimé
+
+#### DEGEN (v2)
+
+| MC Range | Volume requis |
+|----------|---------------|
+| **15-50K** | ≥ $1K |
+| 50-100K | ≥ $4K |
+| 100-200K | ≥ $10K |
+| 200-500K | ≥ $20K |
+
+**Changement** : Floor MC abaissé de 20K à 15K
+
+### Simulation des nouveaux filtres sur CSV
+
+#### VIP SAFE (source SAFE uniquement)
+
+| Métrique | Anciens filtres (v2) | Nouveaux filtres (v3) |
+|----------|---------------------|----------------------|
+| Tokens éligibles | 50 | 67 |
+| Calls/jour | 7.1 | **9.6** |
+| Winrate simulé | 62.5% | **47.8%** |
+
+#### Répartition par tranche MC
+
+| MC | Tokens | Vol requis |
+|----|--------|------------|
+| 20-30K | 27 | $5K |
+| 30-50K | 26 | $8K |
+| 50-70K | 11 | $13K |
+| 70-100K | 3 | $20K |
+
+### Trade-off accepté
+
+| Métrique | Avant (v2) | Après (v3) | Delta |
+|----------|-----------|-----------|-------|
+| Calls/jour | ~4-7 | ~10 | **+50%** |
+| Winrate | ~50-62% | ~48% | -4-14% |
+
+**Justification** : Plus de volume de calls avec un winrate acceptable. Le winrate réel sera mesuré sur les prochaines semaines.
+
+### Déploiement
+
+- **Commit** : `abcf0ff` - feat: update VIP SAFE and DEGEN filters v3
+- **Repo** : antoinealchemy/captn
+- **VPS** : Déployé et vérifié le 02/03/2026 à 17:53 UTC
+
+### Prochaines étapes
+
+- [ ] Monitorer le winrate réel sur 7-14 jours
+- [ ] Valider le volume de ~10 calls/jour VIP SAFE
+- [ ] Ajuster les seuils de volume si nécessaire
+- [ ] Analyser les patterns des tokens 50-100K (nouvelle tranche)
